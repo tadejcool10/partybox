@@ -1,644 +1,517 @@
-import express from "express";
-import dotenv from "dotenv";
-import { GoogleGenAI } from "@google/genai";
-
-dotenv.config();
+const express = require("express");
+const { GoogleGenAI } = require("@google/genai");
 
 const app = express();
 
 app.use(express.json({ limit: "50kb" }));
 
 const PORT = process.env.PORT || 3000;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const PARTYBOX_SECRET = process.env.PARTYBOX_SECRET;
+const API_KEY = process.env.GEMINI_API_KEY;
 
-if (!GEMINI_API_KEY) {
-    console.error("❌ GEMINI_API_KEY is missing!");
-    process.exit(1);
-}
-
-if (!PARTYBOX_SECRET) {
-    console.error("❌ PARTYBOX_SECRET is missing!");
+if (!API_KEY) {
+    console.error("❌ GEMINI_API_KEY environment variable is missing!");
     process.exit(1);
 }
 
 const ai = new GoogleGenAI({
-    apiKey: GEMINI_API_KEY
+    apiKey: API_KEY
 });
 
 const MODEL = "gemini-3.5-flash-lite";
 
-/*
-============================================================
-AVAILABLE LIGHTS
-============================================================
+//==================================================
+// VALID OPTIONS
+//==================================================
 
-This is intentionally duplicated here as a SECURITY
-validation layer.
+const PATTERNS = [
+    "ROCK",
+    "FLOW",
+    "CROSS",
+    "RIPPLE",
+    "FLASH"
+];
 
-Roblox also sends its capability list.
+const PALETTES = [
+    "RAINBOW",
+    "RED",
+    "ORANGE",
+    "YELLOW",
+    "GREEN",
+    "CYAN",
+    "BLUE",
+    "PURPLE",
+    "PINK",
+    "CYBER",
+    "SUNSET",
+    "ICE",
+    "FIRE"
+];
 
-Gemini can only choose from these.
-*/
+const BOTTOM_MODES = [
+    "GRADIENT",
+    "CHASE",
+    "SYNC",
+    "OFF"
+];
 
-const SERVER_CAPABILITIES = {
+//==================================================
+// AI SYSTEM PROMPT
+//==================================================
 
-    "1": [
-        "enabled",
-        "color"
-    ],
+const SYSTEM_PROMPT = `
+You are the AI lighting director for a fictional Roblox
+recreation of a JBL PartyBox 110.
 
-    "2": [
-        "enabled",
-        "color"
-    ],
+Your job is ONLY to choose the lighting show.
 
-    "3": [
-        "enabled",
-        "color"
-    ],
+The Roblox client handles the actual animation.
 
-    "Speaker_Lights": [
-        "color"
-    ],
+AVAILABLE PATTERNS:
 
-    "Grid_Border": [
-        "color"
-    ],
+ROCK
+- Aggressive alternating lights.
+- Best for strong beats and energetic music.
 
-    "Bottom 1": [
-        "enabled",
-        "color"
-    ],
+FLOW
+- Smooth flowing gradient.
+- Best for normal, calm, melodic music.
 
-    "Bottom 2": [
-        "enabled",
-        "color"
-    ],
+CROSS
+- Lights move from the center outward and inward.
+- Best for energetic music.
 
-    "Bottom 3": [
-        "enabled",
-        "color"
-    ],
+RIPPLE
+- A wave expands from the center.
+- Best for bass hits and musical transitions.
 
-    "Bottom 4": [
-        "enabled",
-        "color"
-    ],
+FLASH
+- Large synchronized flashes.
+- Use sparingly for major musical moments.
 
-    "Bottom 5": [
-        "enabled",
-        "color"
-    ],
+AVAILABLE PALETTES:
 
-    "Bottom 6": [
-        "enabled",
-        "color"
-    ]
+RAINBOW
+RED
+ORANGE
+YELLOW
+GREEN
+CYAN
+BLUE
+PURPLE
+PINK
+CYBER
+SUNSET
+ICE
+FIRE
 
-};
+AVAILABLE BOTTOM MODES:
 
-/*
-============================================================
-AUTHENTICATION
-============================================================
-*/
+GRADIENT
+CHASE
+SYNC
+OFF
 
-function authenticate(req, res, next) {
+RULES:
 
-    const suppliedKey =
-        req.headers["x-partybox-key"];
+1. Return ONLY valid JSON.
+2. Never return markdown.
+3. Never explain your answer.
+4. pattern MUST be one of the available patterns.
+5. palette MUST be one of the available palettes.
+6. speed MUST be between 0.25 and 3.
+7. intensity MUST be between 0 and 1.
+8. strobe MUST be true or false.
+9. bottomMode MUST be one of the available modes.
+10. Don't randomly change patterns without a musical reason.
+11. Strong bass should favor RIPPLE or ROCK.
+12. Very strong musical moments can use FLASH.
+13. Calm music should favor FLOW.
+14. Fast energetic music should favor ROCK or CROSS.
+15. Musical transitions should favor RIPPLE.
+16. Strobe should be rare.
+17. BPM should influence animation speed.
+18. Beat strength should influence intensity.
+19. Make the light show feel like a polished commercial party speaker.
+20. Do not attempt to control individual Roblox instances.
 
-    if (
-        !suppliedKey ||
-        suppliedKey !== PARTYBOX_SECRET
-    ) {
+Return EXACTLY this structure:
 
-        return res.status(401).json({
-            error: "Unauthorized"
-        });
-
-    }
-
-    next();
+{
+    "pattern": "FLOW",
+    "palette": "CYBER",
+    "speed": 1.0,
+    "intensity": 0.9,
+    "strobe": false,
+    "bottomMode": "GRADIENT"
 }
+`;
 
-/*
-============================================================
-VALIDATE RGB
-============================================================
-*/
+//==================================================
+// HELPERS
+//==================================================
 
-function validRGB(color) {
+function number(value, min, max, fallback) {
 
-    if (!Array.isArray(color)) {
-        return false;
+    const n = Number(value);
+
+    if (!Number.isFinite(n)) {
+        return fallback;
     }
 
-    if (color.length !== 3) {
-        return false;
-    }
-
-    return color.every(value =>
-        Number.isInteger(value) &&
-        value >= 0 &&
-        value <= 255
+    return Math.max(
+        min,
+        Math.min(max, n)
     );
+}
+
+function cleanString(value, fallback) {
+
+    if (typeof value !== "string") {
+        return fallback;
+    }
+
+    return value.trim();
+}
+
+//==================================================
+// VALIDATE AI RESPONSE
+//==================================================
+
+function validatePlan(plan) {
+
+    if (!plan || typeof plan !== "object") {
+        return {
+            pattern: "FLOW",
+            palette: "RAINBOW",
+            speed: 1,
+            intensity: 0.8,
+            strobe: false,
+            bottomMode: "GRADIENT"
+        };
+    }
+
+    let pattern =
+        cleanString(
+            plan.pattern,
+            "FLOW"
+        ).toUpperCase();
+
+    let palette =
+        cleanString(
+            plan.palette,
+            "RAINBOW"
+        ).toUpperCase();
+
+    let bottomMode =
+        cleanString(
+            plan.bottomMode,
+            "GRADIENT"
+        ).toUpperCase();
+
+    if (!PATTERNS.includes(pattern)) {
+        pattern = "FLOW";
+    }
+
+    if (!PALETTES.includes(palette)) {
+        palette = "RAINBOW";
+    }
+
+    if (!BOTTOM_MODES.includes(bottomMode)) {
+        bottomMode = "GRADIENT";
+    }
+
+    return {
+
+        pattern,
+
+        palette,
+
+        speed:
+            number(
+                plan.speed,
+                0.25,
+                3,
+                1
+            ),
+
+        intensity:
+            number(
+                plan.intensity,
+                0,
+                1,
+                0.9
+            ),
+
+        strobe:
+            plan.strobe === true,
+
+        bottomMode
+
+    };
+}
+
+//==================================================
+// FALLBACK
+//==================================================
+
+function fallbackPlan() {
+
+    return {
+
+        pattern: "FLOW",
+
+        palette: "RAINBOW",
+
+        speed: 1,
+
+        intensity: 0.8,
+
+        strobe: false,
+
+        bottomMode: "GRADIENT"
+
+    };
 
 }
 
-/*
-============================================================
-VALIDATE GEMINI ACTION
-============================================================
-*/
+//==================================================
+// PARTYBOX AI ENDPOINT
+//==================================================
 
-function validateAction(action) {
+app.post("/partybox", async (req, res) => {
 
-    if (!action || typeof action !== "object") {
-        return null;
-    }
+    try {
 
-    const light =
-        action.light;
+        const music = req.body || {};
 
-    const change =
-        action.change;
+        //==================================================
+        // SANITIZE ROBLOX DATA
+        //==================================================
 
-    if (
-        typeof light !== "string" ||
-        !change ||
-        typeof change !== "object"
-    ) {
-        return null;
-    }
+        const loudness =
+            number(
+                music.loudness,
+                0,
+                3000,
+                0
+            );
 
-    /*
-    --------------------------------------------
-    Check whether the light exists
-    --------------------------------------------
-    */
+        const bpm =
+            number(
+                music.bpm,
+                40,
+                220,
+                0
+            );
 
-    const allowedChanges =
-        SERVER_CAPABILITIES[light];
+        const beatStrength =
+            number(
+                music.beatStrength,
+                0,
+                1,
+                0
+            );
 
-    if (!allowedChanges) {
+        const bass =
+            number(
+                music.bass,
+                0,
+                1,
+                0
+            );
 
-        console.warn(
-            "Rejected unknown light:",
-            light
+        const mid =
+            number(
+                music.mid,
+                0,
+                1,
+                0
+            );
+
+        const treble =
+            number(
+                music.treble,
+                0,
+                1,
+                0
+            );
+
+        const beat =
+            music.beat === true;
+
+        const energy =
+            cleanString(
+                music.energy,
+                "NORMAL"
+            );
+
+        const currentPattern =
+            cleanString(
+                music.currentPattern,
+                "FLOW"
+            );
+
+        //==================================================
+        // SEND TO GEMINI
+        //==================================================
+
+        const prompt = `
+CURRENT MUSIC DATA:
+
+Loudness: ${loudness}
+
+BPM: ${bpm}
+
+Beat detected: ${beat}
+
+Beat strength: ${beatStrength}
+
+Bass energy: ${bass}
+
+Mid energy: ${mid}
+
+Treble energy: ${treble}
+
+Overall energy: ${energy}
+
+Current lighting pattern: ${currentPattern}
+
+Choose the next lighting configuration.
+
+Return ONLY JSON.
+`;
+
+        console.log(
+            `🎵 Music | BPM: ${bpm} | Loudness: ${loudness} | Beat: ${beat} | Energy: ${energy}`
         );
 
-        return null;
-    }
+        const response =
+            await ai.models.generateContent({
 
-    const cleanedChange = {};
+                model: MODEL,
 
-    /*
-    --------------------------------------------
-    ENABLED
-    --------------------------------------------
-    */
+                contents: prompt,
 
-    if (change.enabled !== undefined) {
+                config: {
 
-        if (
-            !allowedChanges.includes(
-                "enabled"
-            )
-        ) {
+                    systemInstruction:
+                        SYSTEM_PROMPT,
 
-            console.warn(
-                "Rejected enabled change:",
-                light
+                    temperature: 0.65,
+
+                    responseMimeType:
+                        "application/json"
+
+                }
+
+            });
+
+        let text =
+            response.text;
+
+        if (!text) {
+            throw new Error(
+                "Gemini returned an empty response."
             );
-
-        } else {
-
-            if (
-                typeof change.enabled ===
-                "boolean"
-            ) {
-
-                cleanedChange.enabled =
-                    change.enabled;
-
-            }
-
         }
 
-    }
+        //==================================================
+        // REMOVE ACCIDENTAL MARKDOWN
+        //==================================================
 
-    /*
-    --------------------------------------------
-    COLOR
-    --------------------------------------------
-    */
+        text =
+            text
+                .replace(/^```json\s*/i, "")
+                .replace(/^```\s*/i, "")
+                .replace(/\s*```$/i, "")
+                .trim();
 
-    if (change.color !== undefined) {
+        //==================================================
+        // PARSE
+        //==================================================
 
-        if (
-            !allowedChanges.includes(
-                "color"
-            )
-        ) {
+        let plan;
 
-            console.warn(
-                "Rejected color change:",
-                light
+        try {
+
+            plan =
+                JSON.parse(text);
+
+        } catch (parseError) {
+
+            console.error(
+                "❌ Gemini returned invalid JSON:",
+                text
             );
 
-        } else {
-
-            if (
-                validRGB(change.color)
-            ) {
-
-                cleanedChange.color =
-                    change.color;
-
-            }
-
+            throw new Error(
+                "Gemini response was not valid JSON."
+            );
         }
 
-    }
+        //==================================================
+        // VALIDATE
+        //==================================================
 
-    /*
-    --------------------------------------------
-    Don't send empty actions
-    --------------------------------------------
-    */
+        plan =
+            validatePlan(plan);
 
-    if (
-        Object.keys(cleanedChange)
-            .length === 0
-    ) {
+        console.log(
+            `💡 AI → ${plan.pattern} | 🎨 ${plan.palette} | ⚡ ${plan.speed}x | 🔆 ${plan.intensity} | Strobe: ${plan.strobe}`
+        );
 
-        return null;
+        //==================================================
+        // RETURN TO ROBLOX
+        //==================================================
 
-    }
+        res.json(plan);
 
-    return {
-        light,
-        change: cleanedChange
-    };
+    } catch (error) {
 
-}
+        console.error(
+            "❌ PartyBox AI error:",
+            error
+        );
 
-/*
-============================================================
-VALIDATE WHOLE RESPONSE
-============================================================
-*/
+        // IMPORTANT:
+        // Even if Gemini fails or quota is exceeded,
+        // Roblox still receives a valid lighting plan.
 
-function validateAIResponse(data) {
-
-    if (
-        !data ||
-        typeof data !== "object"
-    ) {
-
-        return {
-            actions: []
-        };
+        res.json(
+            fallbackPlan()
+        );
 
     }
 
-    if (
-        !Array.isArray(data.actions)
-    ) {
+});
 
-        return {
-            actions: []
-        };
-
-    }
-
-    /*
-    Limit how many lights Gemini can change
-    in one request.
-
-    This prevents crazy responses like
-    hundreds of actions.
-    */
-
-    const actions =
-        data.actions
-            .slice(0, 12)
-            .map(validateAction)
-            .filter(Boolean);
-
-    return {
-        actions
-    };
-
-}
-
-/*
-============================================================
-HEALTH CHECK
-============================================================
-*/
+//==================================================
+// HEALTH CHECK
+//==================================================
 
 app.get("/", (req, res) => {
 
     res.json({
-        status: "online",
-        service: "PartyBox AI",
-        model: MODEL
+
+        status:
+            "PartyBox AI online",
+
+        model:
+            MODEL,
+
+        patterns:
+            PATTERNS,
+
+        palettes:
+            PALETTES
+
     });
 
 });
 
-/*
-============================================================
-PARTYBOX AI
-============================================================
-*/
-
-app.post(
-    "/partybox",
-    authenticate,
-    async (req, res) => {
-
-        try {
-
-            const audio =
-                req.body?.audio;
-
-            if (!audio) {
-
-                return res.status(400).json({
-                    error: "Missing audio data"
-                });
-
-            }
-
-            /*
-            ============================================
-            BUILD CAPABILITY DESCRIPTION
-            ============================================
-            */
-
-            const capabilityText =
-                Object.entries(
-                    SERVER_CAPABILITIES
-                )
-                .map(
-                    ([name, changes]) =>
-                        `- ${name}: ${changes.join(", ")}`
-                )
-                .join("\n");
-
-            /*
-            ============================================
-            GEMINI PROMPT
-            ============================================
-            */
-
-            const prompt = `
-You are the AI lighting director for a
-JBL PartyBox-style speaker recreated in Roblox.
-
-Your job is to make creative music-reactive
-lighting decisions.
-
-You DO NOT control Roblox directly.
-
-You ONLY return JSON commands.
-
-==================================================
-AVAILABLE LIGHTS
-==================================================
-
-${capabilityText}
-
-==================================================
-STRICT RULES
-==================================================
-
-1. NEVER invent a light.
-
-2. NEVER use a property that isn't listed
-   for that light.
-
-3. NEVER output anything except JSON.
-
-4. "enabled" must be true or false.
-
-5. "color" must be exactly:
-
-   [R, G, B]
-
-   where every value is between 0 and 255.
-
-6. Do not change every light on every request.
-
-7. Use the music information to decide
-   when strong lighting changes make sense.
-
-8. Higher beat strength should generally
-   result in stronger lighting changes.
-
-9. Faster BPM can use faster-looking
-   color/light changes.
-
-10. Slower BPM can use calmer combinations.
-
-11. Sometimes turn lights off.
-
-12. Sometimes use only one light.
-
-13. Sometimes synchronize multiple lights.
-
-14. Make the result feel like a polished
-   commercial PartyBox light show.
-
-==================================================
-AUDIO INFORMATION
-==================================================
-
-${JSON.stringify(audio, null, 2)}
-
-==================================================
-OUTPUT FORMAT
-==================================================
-
-Return exactly:
-
-{
-    "actions": [
-        {
-            "light": "Bottom 3",
-            "change": {
-                "color": [255, 0, 180]
-            }
-        }
-    ]
-}
-
-No markdown.
-No explanation.
-JSON only.
-`;
-
-            /*
-            ============================================
-            ASK GEMINI
-            ============================================
-            */
-
-            const response =
-                await ai.models.generateContent({
-
-                    model: MODEL,
-
-                    contents: prompt,
-
-                    config: {
-
-                        responseMimeType:
-                            "application/json",
-
-                        responseSchema: {
-
-                            type: "object",
-
-                            properties: {
-
-                                actions: {
-
-                                    type: "array",
-
-                                    items: {
-
-                                        type: "object",
-
-                                        properties: {
-
-                                            light: {
-                                                type: "string"
-                                            },
-
-                                            change: {
-
-                                                type: "object",
-
-                                                properties: {
-
-                                                    enabled: {
-                                                        type: "boolean"
-                                                    },
-
-                                                    color: {
-
-                                                        type: "array",
-
-                                                        items: {
-                                                            type: "integer"
-                                                        }
-
-                                                    }
-
-                                                }
-
-                                            }
-
-                                        },
-
-                                        required: [
-                                            "light",
-                                            "change"
-                                        ]
-
-                                    }
-
-                                }
-
-                            },
-
-                            required: [
-                                "actions"
-                            ]
-
-                        }
-
-                    }
-
-                });
-
-            /*
-            ============================================
-            PARSE GEMINI
-            ============================================
-            */
-
-            let parsed;
-
-            try {
-
-                parsed =
-                    JSON.parse(
-                        response.text
-                    );
-
-            } catch (error) {
-
-                console.error(
-                    "❌ Gemini returned invalid JSON:",
-                    response.text
-                );
-
-                return res.status(500).json({
-                    error:
-                        "Gemini returned invalid JSON"
-                });
-
-            }
-
-            /*
-            ============================================
-            SECURITY VALIDATION
-            ============================================
-            */
-
-            const safeResponse =
-                validateAIResponse(
-                    parsed
-                );
-
-            /*
-            ============================================
-            SEND TO ROBLOX
-            ============================================
-            */
-
-            res.json(
-                safeResponse
-            );
-
-        } catch (error) {
-
-            console.error(
-                "❌ PartyBox AI error:",
-                error
-            );
-
-            res.status(500).json({
-                error:
-                    "AI request failed"
-            });
-
-        }
-
-    }
-);
-
-/*
-============================================================
-START SERVER
-============================================================
-*/
+//==================================================
+// START SERVER
+//==================================================
 
 app.listen(
     PORT,
@@ -647,10 +520,6 @@ app.listen(
 
         console.log(
             `🔊 PartyBox AI running on port ${PORT}`
-        );
-
-        console.log(
-            `🤖 Gemini model: ${MODEL}`
         );
 
     }
