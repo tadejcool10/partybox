@@ -1,43 +1,47 @@
+// ==========================================================
+// PARTYBOX AI SERVER
+// Render / Node.js
+// ==========================================================
+
 const express = require("express");
-const { GoogleGenAI } = require("@google/genai");
 
 const app = express();
 
 app.use(express.json({ limit: "50kb" }));
 
-//==================================================
+// ==========================================================
 // CONFIG
-//==================================================
+// ==========================================================
 
-const PORT = process.env.PORT || 3000;
+const PORT =
+    process.env.PORT || 3000;
 
-const API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_API_KEY =
+    process.env.GEMINI_API_KEY;
 
-const MODEL = "gemini-3.5-flash-lite";
+const PARTYBOX_SECRET =
+    process.env.PARTYBOX_SECRET;
 
-if (!API_KEY) {
-    console.error(
-        "❌ GEMINI_API_KEY environment variable is missing!"
-    );
+const GEMINI_MODEL =
+    process.env.GEMINI_MODEL ||
+    "gemini-3.5-flash-lite";
 
-    process.exit(1);
-}
+// ==========================================================
+// STATE
+// ==========================================================
 
-const ai = new GoogleGenAI({
-    apiKey: API_KEY
-});
+let lastPalette = null;
+let paletteHistory = [];
 
-//==================================================
-// VALID OPTIONS
-//==================================================
+let lastPattern = null;
+let lastPlan = null;
 
-const PATTERNS = [
-    "ROCK",
-    "FLOW",
-    "CROSS",
-    "RIPPLE",
-    "FLASH"
-];
+let lastBpm = null;
+let lastEnergy = null;
+
+// ==========================================================
+// PALETTES
+// ==========================================================
 
 const PALETTES = [
     "RAINBOW",
@@ -55,53 +59,652 @@ const PALETTES = [
     "FIRE"
 ];
 
-const BOTTOM_MODES = [
-    "GRADIENT",
-    "CHASE",
-    "SYNC",
-    "OFF"
+// ==========================================================
+// PALETTE GROUPS
+// ==========================================================
+
+const CALM_PALETTES = [
+    "RAINBOW",
+    "BLUE",
+    "PURPLE",
+    "CYAN",
+    "PINK",
+    "ICE",
+    "GREEN"
 ];
 
-//==================================================
-// AI SYSTEM PROMPT
-//==================================================
+const NORMAL_PALETTES = [
+    "RAINBOW",
+    "BLUE",
+    "CYAN",
+    "PURPLE",
+    "PINK",
+    "GREEN",
+    "YELLOW",
+    "ORANGE",
+    "SUNSET"
+];
+
+const ENERGETIC_PALETTES = [
+    "RAINBOW",
+    "RED",
+    "ORANGE",
+    "PURPLE",
+    "BLUE",
+    "PINK",
+    "CYAN",
+    "YELLOW",
+    "GREEN",
+    "SUNSET",
+    "FIRE",
+    "CYBER"
+];
+
+const EXTREME_PALETTES = [
+    "RAINBOW",
+    "RED",
+    "ORANGE",
+    "FIRE",
+    "PURPLE",
+    "BLUE",
+    "PINK",
+    "SUNSET",
+    "YELLOW",
+    "CYAN",
+    "CYBER"
+];
+
+// ==========================================================
+// RANDOM
+// ==========================================================
+
+function randomFrom(array) {
+
+    if (!array || array.length === 0) {
+        return "BLUE";
+    }
+
+    return array[
+        Math.floor(
+            Math.random() * array.length
+        )
+    ];
+}
+
+// ==========================================================
+// AVOID RECENT
+// ==========================================================
+
+function avoidRecent(array) {
+
+    const filtered =
+        array.filter(
+            palette =>
+                !paletteHistory
+                    .slice(-3)
+                    .includes(palette)
+        );
+
+    if (filtered.length > 0) {
+        return filtered;
+    }
+
+    return array;
+}
+
+// ==========================================================
+// PALETTE POOL
+// ==========================================================
+
+function getPalettePool(
+    bpm,
+    energy
+) {
+
+    if (
+        bpm <= 10 ||
+        energy === "CALM"
+    ) {
+
+        return CALM_PALETTES;
+
+    }
+
+    if (
+        energy === "NORMAL"
+    ) {
+
+        return NORMAL_PALETTES;
+
+    }
+
+    if (
+        energy === "ENERGETIC"
+    ) {
+
+        return ENERGETIC_PALETTES;
+
+    }
+
+    if (
+        energy === "EXTREME"
+    ) {
+
+        return EXTREME_PALETTES;
+
+    }
+
+    return NORMAL_PALETTES;
+}
+
+// ==========================================================
+// FALLBACK PALETTE
+// ==========================================================
+
+function getFallbackPalette(
+    bpm,
+    energy
+) {
+
+    let pool =
+        getPalettePool(
+            bpm,
+            energy
+        );
+
+    // 0 BPM / CALM:
+    // Rainbow is intentionally allowed.
+
+    if (
+        bpm <= 10 ||
+        energy === "CALM"
+    ) {
+
+        pool = [
+            "RAINBOW",
+            "BLUE",
+            "PURPLE",
+            "CYAN",
+            "PINK",
+            "ICE",
+            "GREEN"
+        ];
+
+    }
+
+    let choices =
+        avoidRecent(pool);
+
+    // CYBER is never a calm/0 BPM fallback.
+
+    if (
+        bpm <= 10 ||
+        energy === "CALM"
+    ) {
+
+        choices =
+            choices.filter(
+                palette =>
+                    palette !== "CYBER"
+            );
+
+    }
+
+    // Avoid immediately repeating the same palette.
+
+    if (
+        lastPalette &&
+        choices.length > 1
+    ) {
+
+        const different =
+            choices.filter(
+                palette =>
+                    palette !== lastPalette
+            );
+
+        if (
+            different.length > 0
+        ) {
+
+            choices =
+                different;
+
+        }
+
+    }
+
+    return randomFrom(
+        choices
+    );
+}
+
+// ==========================================================
+// MEANINGFUL MUSIC CHANGE
+// ==========================================================
+
+function musicChangedMeaningfully(
+    bpm,
+    energy
+) {
+
+    if (
+        lastBpm === null ||
+        lastEnergy === null
+    ) {
+
+        return true;
+
+    }
+
+    // Energy changes are meaningful.
+
+    if (
+        energy !== lastEnergy
+    ) {
+
+        return true;
+
+    }
+
+    // 20+ BPM difference is meaningful.
+
+    if (
+        Math.abs(
+            bpm - lastBpm
+        ) >= 20
+    ) {
+
+        return true;
+
+    }
+
+    return false;
+}
+
+// ==========================================================
+// PATTERN POOL
+// ==========================================================
+
+function getPatternPool(
+    bpm,
+    energy
+) {
+
+    if (
+        bpm <= 10 ||
+        energy === "CALM"
+    ) {
+
+        return [
+            "FLOW",
+            "RIPPLE"
+        ];
+
+    }
+
+    if (
+        energy === "NORMAL"
+    ) {
+
+        if (
+            bpm < 110
+        ) {
+
+            return [
+                "FLOW",
+                "CROSS",
+                "RIPPLE"
+            ];
+
+        }
+
+        return [
+            "CROSS",
+            "ROCK",
+            "RIPPLE"
+        ];
+
+    }
+
+    if (
+        energy === "ENERGETIC"
+    ) {
+
+        return [
+            "ROCK",
+            "CROSS",
+            "RIPPLE"
+        ];
+
+    }
+
+    if (
+        energy === "EXTREME"
+    ) {
+
+        return [
+            "ROCK",
+            "CROSS",
+            "FLASH"
+        ];
+
+    }
+
+    return [
+        "FLOW",
+        "CROSS",
+        "RIPPLE"
+    ];
+}
+
+// ==========================================================
+// FALLBACK PATTERN
+// ==========================================================
+
+function getFallbackPattern(
+    bpm,
+    energy
+) {
+
+    let pool =
+        getPatternPool(
+            bpm,
+            energy
+        );
+
+    if (
+        lastPattern &&
+        pool.length > 1
+    ) {
+
+        const alternatives =
+            pool.filter(
+                pattern =>
+                    pattern !== lastPattern
+            );
+
+        if (
+            alternatives.length > 0
+        ) {
+
+            pool =
+                alternatives;
+
+        }
+
+    }
+
+    return randomFrom(
+        pool
+    );
+}
+
+// ==========================================================
+// FIX PALETTE
+// ==========================================================
+
+function fixPalette(
+    aiPalette,
+    bpm,
+    energy,
+    meaningfulChange
+) {
+
+    let palette =
+        String(
+            aiPalette || ""
+        ).toUpperCase();
+
+    // ------------------------------------------------------
+    // UNKNOWN
+    // ------------------------------------------------------
+
+    if (
+        !PALETTES.includes(
+            palette
+        )
+    ) {
+
+        palette =
+            getFallbackPalette(
+                bpm,
+                energy
+            );
+
+    }
+
+    // ------------------------------------------------------
+    // NO MEANINGFUL CHANGE
+    // ------------------------------------------------------
+
+    // Don't keep changing the palette every request.
+
+    if (
+        !meaningfulChange &&
+        lastPalette
+    ) {
+
+        return lastPalette;
+
+    }
+
+    // ------------------------------------------------------
+    // CALM / 0 BPM
+    // ------------------------------------------------------
+
+    if (
+        bpm <= 10 ||
+        energy === "CALM"
+    ) {
+
+        const forbidden = [
+            "CYBER",
+            "FIRE",
+            "RED",
+            "ORANGE",
+            "SUNSET"
+        ];
+
+        if (
+            forbidden.includes(
+                palette
+            )
+        ) {
+
+            palette =
+                getFallbackPalette(
+                    bpm,
+                    energy
+                );
+
+        }
+
+    }
+
+    // ------------------------------------------------------
+    // CYBER RESTRICTION
+    // ------------------------------------------------------
+
+    if (
+        palette === "CYBER"
+    ) {
+
+        if (
+            bpm <= 80 ||
+            energy === "CALM" ||
+            lastPalette === "CYBER" ||
+            paletteHistory
+                .slice(-3)
+                .includes("CYBER")
+        ) {
+
+            palette =
+                getFallbackPalette(
+                    bpm,
+                    energy
+                );
+
+        }
+
+    }
+
+    // ------------------------------------------------------
+    // RAINBOW
+    // ------------------------------------------------------
+
+    // Rainbow is NOT banned.
+    //
+    // It is only prevented from appearing
+    // repeatedly without another color between it.
+
+    if (
+        palette === "RAINBOW"
+    ) {
+
+        if (
+            lastPalette === "RAINBOW" ||
+            paletteHistory
+                .slice(-3)
+                .includes("RAINBOW")
+        ) {
+
+            const alternatives =
+                getPalettePool(
+                    bpm,
+                    energy
+                ).filter(
+                    p =>
+                        p !== "RAINBOW" &&
+                        p !== lastPalette
+                );
+
+            if (
+                alternatives.length > 0
+            ) {
+
+                palette =
+                    randomFrom(
+                        alternatives
+                    );
+
+            }
+
+        }
+
+    }
+
+    // ------------------------------------------------------
+    // SAME PALETTE
+    // ------------------------------------------------------
+
+    if (
+        palette === lastPalette
+    ) {
+
+        const alternatives =
+            getPalettePool(
+                bpm,
+                energy
+            ).filter(
+                p =>
+                    p !== lastPalette &&
+                    !paletteHistory
+                        .slice(-2)
+                        .includes(p)
+            );
+
+        if (
+            alternatives.length > 0
+        ) {
+
+            palette =
+                randomFrom(
+                    alternatives
+                );
+
+        }
+
+    }
+
+    return palette;
+}
+
+// ==========================================================
+// REMEMBER PALETTE
+// ==========================================================
+
+function rememberPalette(
+    palette
+) {
+
+    lastPalette =
+        palette;
+
+    paletteHistory.push(
+        palette
+    );
+
+    while (
+        paletteHistory.length > 5
+    ) {
+
+        paletteHistory.shift();
+
+    }
+}
+
+// ==========================================================
+// SYSTEM PROMPT
+// ==========================================================
 
 const SYSTEM_PROMPT = `
-You are the lighting director for a fictional Roblox
-recreation of a JBL PartyBox 110.
 
-You control the overall lighting SHOW.
+You are the professional lighting director
+for a fictional Roblox recreation of a JBL PartyBox 110.
 
-The Roblox client performs the actual animation.
+Your job is to create a musical lighting SHOW.
 
-Your most important job is NOT to constantly change
-the lights.
-
-You must maintain continuity and only change the lighting
-when the music meaningfully changes.
+The Roblox client handles the actual animation.
 
 ==================================================
-AVAILABLE PATTERNS
+CORE BEHAVIOR
+==================================================
+
+Do NOT change the lighting configuration
+just because a new request arrived.
+
+The system asks for a new decision every few seconds,
+but that does NOT mean the lighting must change
+every few seconds.
+
+Only make meaningful changes when the music changes.
+
+If BPM and energy are basically unchanged,
+KEEP the current pattern and palette.
+
+==================================================
+PATTERNS
 ==================================================
 
 ROCK
-Aggressive alternating rhythmic movement.
+Aggressive rhythmic movement.
 
 FLOW
 Smooth continuous movement.
 
 CROSS
-Movement outward/inward from the center.
+Movement toward and away from the center.
 
 RIPPLE
-Wave-like movement, especially good for bass.
+Wave movement.
 
 FLASH
 Large synchronized flashes.
-Use VERY rarely for major musical moments.
+Use rarely.
 
 ==================================================
-AVAILABLE PALETTES
+PALETTES
 ==================================================
 
 RAINBOW
@@ -119,297 +722,238 @@ ICE
 FIRE
 
 ==================================================
-AVAILABLE BOTTOM MODES
+IMPORTANT PALETTE RULE
 ==================================================
 
-GRADIENT
-CHASE
-SYNC
-OFF
+Do NOT constantly choose:
+
+BLUE
+ICE
+CYAN
+CYBER
+
+They are NOT defaults.
+
+RAINBOW is a valid and beautiful palette.
+
+RAINBOW is NOT banned.
+
+RAINBOW can be used during calm,
+normal, energetic, or extreme music.
+
+Do not artificially avoid RAINBOW.
 
 ==================================================
-CRITICAL STATEFUL BEHAVIOR
+0 BPM
 ==================================================
 
-The previous lighting configuration is provided to you.
+If BPM is 0:
 
-You MUST treat the previous configuration as the current
-state of the PartyBox.
+The music is stopped or nearly silent.
 
-DO NOT treat every request as a fresh lighting decision.
+Prefer calm lighting.
 
-DO NOT reset to a default configuration.
+Allowed:
 
-DO NOT automatically choose FLOW.
+RAINBOW
+BLUE
+PURPLE
+CYAN
+PINK
+ICE
+GREEN
 
-DO NOT automatically choose BLUE.
+Forbidden:
 
-DO NOT automatically choose GRADIENT.
+CYBER
+FIRE
+RED
+ORANGE
+SUNSET
 
-If the music has not meaningfully changed:
+RAINBOW IS ALLOWED AT 0 BPM.
 
-KEEP the previous pattern.
-KEEP the previous palette.
-KEEP the previous bottom mode.
-
-You may make only a small speed or intensity adjustment
-if appropriate.
-
-==================================================
-WHEN TO CHANGE LIGHTING
-==================================================
-
-Change the lighting when there is a meaningful musical change.
-
-Examples:
-
-- BPM changes significantly.
-- Energy changes category.
-- Bass becomes significantly stronger.
-- Music becomes much more energetic.
-- Music becomes much calmer.
-- A major transition occurs.
-- The current pattern no longer matches the music.
-
-A small BPM fluctuation is NOT enough to change the show.
+CYBER IS NOT.
 
 ==================================================
-PATTERN CONTINUITY
+CALM
 ==================================================
 
-If the current pattern is appropriate for the music:
+Prefer:
 
-KEEP IT.
-
-Do NOT change the pattern merely because you received
-another request.
-
-Example:
-
-Previous:
-FLOW
-
-Music is still calm:
-
-Output:
-FLOW
-
-Previous:
-ROCK
-
-Music is still energetic:
-
-Output:
-ROCK
-
-Previous:
-RIPPLE
-
-Music is still bass-heavy:
-
-Output:
-RIPPLE
+RAINBOW
+BLUE
+PURPLE
+CYAN
+PINK
+ICE
+GREEN
 
 ==================================================
-PATTERN TRANSITIONS
+NORMAL
+==================================================
+
+Prefer a varied selection from:
+
+RAINBOW
+BLUE
+CYAN
+PURPLE
+PINK
+GREEN
+YELLOW
+ORANGE
+SUNSET
+
+==================================================
+ENERGETIC
+==================================================
+
+Prefer a varied selection from:
+
+RAINBOW
+RED
+ORANGE
+PURPLE
+BLUE
+PINK
+CYAN
+YELLOW
+GREEN
+SUNSET
+FIRE
+CYBER
+
+CYBER is only ONE possible choice.
+
+Do NOT default to CYBER.
+
+==================================================
+EXTREME
+==================================================
+
+Prefer:
+
+RAINBOW
+RED
+ORANGE
+FIRE
+PURPLE
+BLUE
+PINK
+SUNSET
+YELLOW
+CYAN
+CYBER
+
+==================================================
+RAINBOW
+==================================================
+
+RAINBOW should appear naturally in the show.
+
+Do not use it every request.
+
+Do not permanently avoid it.
+
+RAINBOW is especially good for:
+
+musical transitions
+celebratory sections
+dreamy sections
+big moments
+visual variety
+
+==================================================
+PATTERN RULES
 ==================================================
 
 CALM:
 
-Prefer FLOW or RIPPLE.
+FLOW
+RIPPLE
 
 NORMAL:
 
-Prefer FLOW, CROSS, or RIPPLE.
+FLOW
+CROSS
+RIPPLE
 
 ENERGETIC:
 
-Prefer ROCK, CROSS, or RIPPLE.
+ROCK
+CROSS
+RIPPLE
 
 EXTREME:
 
-Prefer ROCK, CROSS, or rarely FLASH.
-
-If the current pattern is already appropriate,
-KEEP THE CURRENT PATTERN.
-
-If the current pattern is inappropriate,
-switch to a better one.
+ROCK
+FLASH
+CROSS
 
 ==================================================
 BPM
 ==================================================
 
-Below 80 BPM:
+Below 80:
+
 FLOW or RIPPLE
 
-80-110 BPM:
-FLOW, CROSS, or RIPPLE
+80-110:
 
-110-130 BPM:
-CROSS, ROCK, or RIPPLE
+FLOW or CROSS
 
-130-150 BPM:
+110-130:
+
+CROSS or ROCK
+
+130-150:
+
 ROCK or CROSS
 
-Above 150 BPM:
-ROCK, CROSS, or rarely FLASH
+Above 150:
 
-These are guidelines, not mandatory changes.
-
-==================================================
-PALETTE CONTINUITY
-==================================================
-
-The previous palette is extremely important.
-
-If the current palette fits the music:
-
-KEEP IT.
-
-Do NOT change palette simply because the BPM changed.
-
-Only change palette when the musical mood or energy
-meaningfully changes.
-
-==================================================
-PALETTE GUIDANCE
-==================================================
-
-CALM:
-
-ICE
-BLUE
-CYAN
-PURPLE
-
-DREAMY:
-
-PURPLE
-CYAN
-BLUE
-PINK
-
-EMOTIONAL:
-
-BLUE
-PURPLE
-CYAN
-
-ENERGETIC:
-
-CYBER
-FIRE
-RED
-PURPLE
-BLUE
-
-AGGRESSIVE:
-
-FIRE
-RED
-ORANGE
-
-BRIGHT / HAPPY:
-
-YELLOW
-ORANGE
-GREEN
-PINK
-
-MYSTERIOUS:
-
-PURPLE
-BLUE
-CYBER
-
-==================================================
-RAINBOW RULE
-==================================================
-
-RAINBOW IS NOT A DEFAULT.
-
-Do NOT use RAINBOW repeatedly.
-
-If the previous palette is RAINBOW, do NOT automatically
-keep choosing RAINBOW forever.
-
-However, once a different palette has been selected,
-DO NOT keep changing it unnecessarily.
-
-RAINBOW should only be selected when the music genuinely
-benefits from a colorful multi-color effect.
-
-==================================================
-ANTI-REPETITION
-==================================================
-
-Do NOT repeatedly return to:
-
-FLOW + BLUE + GRADIENT
-
-Do NOT repeatedly return to:
-
-FLOW + RAINBOW + GRADIENT
-
-If the exact same configuration was used previously and
-the music has meaningfully changed, choose something
-different.
-
-The show should evolve over time.
-
-However:
-
-DO NOT change everything every request.
-
-A good lighting show has continuity with occasional
-musical transitions.
-
-==================================================
-ENERGY
-==================================================
-
-CALM:
-
-Speed 0.5-0.9
-Intensity 0.5-0.75
-
-NORMAL:
-
-Speed 0.8-1.3
-Intensity 0.7-0.9
-
-ENERGETIC:
-
-Speed 1.2-2.0
-Intensity 0.85-1.0
-
-EXTREME:
-
-Speed 1.6-3.0
-Intensity 0.95-1.0
+ROCK, CROSS, or FLASH
 
 ==================================================
 SPEED
 ==================================================
 
-Speed should generally follow the current music.
+CALM:
 
-Do NOT randomly change speed.
+0.5 - 0.9
 
-If the music is basically unchanged,
-keep approximately the previous speed.
+NORMAL:
+
+0.8 - 1.3
+
+ENERGETIC:
+
+1.2 - 2.0
+
+EXTREME:
+
+1.6 - 3.0
 
 ==================================================
 INTENSITY
 ==================================================
 
-Intensity should follow energy.
+CALM:
 
-Do NOT randomly change intensity.
+0.5 - 0.75
 
-If the music is basically unchanged,
-keep approximately the previous intensity.
+NORMAL:
+
+0.7 - 0.9
+
+ENERGETIC:
+
+0.85 - 1.0
+
+EXTREME:
+
+0.95 - 1.0
 
 ==================================================
 STROBE
@@ -417,125 +961,70 @@ STROBE
 
 Normally false.
 
-Only use true for an extremely strong musical moment.
+Only use true during major musical moments.
 
-High BPM alone does NOT justify strobe.
+High BPM alone does not justify strobe.
 
-Once the moment passes, return strobe to false.
+Never use strobe at 0 BPM.
 
 ==================================================
 BOTTOM MODE
 ==================================================
 
 CALM:
+
 GRADIENT
 
 NORMAL:
+
 GRADIENT or SYNC
 
 ENERGETIC:
+
 CHASE or SYNC
 
 EXTREME:
+
 CHASE or SYNC
 
-If the current bottom mode already fits,
-KEEP IT.
-
-Do NOT constantly switch bottom modes.
-
 ==================================================
-IMPORTANT DECISION PROCESS
+MUSICAL EVOLUTION
 ==================================================
 
-Before generating the answer, internally determine:
+If energy changes significantly:
 
-1. What is the previous pattern?
-2. What is the previous palette?
-3. What is the previous bottom mode?
-4. Has the music meaningfully changed?
-5. Does the previous lighting still fit?
-6. If yes, KEEP the configuration.
-7. If no, change only what needs changing.
-8. Avoid unnecessary changes.
-9. Never reset to defaults.
+Consider changing the pattern AND palette.
 
-==================================================
-EXAMPLES
-==================================================
+If BPM changes significantly:
 
-Previous:
+Consider changing the pattern.
 
-FLOW + BLUE + GRADIENT
+If nothing meaningfully changed:
 
-New music:
-Still calm, similar BPM.
+KEEP the current pattern and palette.
 
-Result:
-
-FLOW + BLUE + GRADIENT
-
-KEEP IT.
-
---------------------------------------------------
-
-Previous:
-
-FLOW + BLUE + GRADIENT
-
-New music:
-BPM rises to 140 and energy becomes energetic.
-
-Result could be:
-
-ROCK + FIRE + CHASE
-
-This is a meaningful transition.
-
---------------------------------------------------
-
-Previous:
-
-ROCK + FIRE + CHASE
-
-New music:
-Still energetic and similar BPM.
-
-Result:
-
-ROCK + FIRE + CHASE
-
-KEEP IT.
-
---------------------------------------------------
-
-Previous:
-
-RIPPLE + PURPLE + SYNC
-
-New music:
-Strong bass continues.
-
-Result:
-
-RIPPLE + PURPLE + SYNC
-
-KEEP IT.
+Do not randomly reinvent the show.
 
 ==================================================
-FINAL RULE
+CURRENT SHOW
 ==================================================
 
-CONTINUITY IS MORE IMPORTANT THAN CONSTANT VARIETY.
+You will receive:
 
-Do not make a new lighting show every request.
+CURRENT PATTERN
+CURRENT PALETTE
+RECENT PALETTES
+CURRENT BPM
+CURRENT ENERGY
 
-Make the lighting feel like ONE continuous PartyBox
-performance that reacts to the music.
+Use these to CONTINUE the lighting show.
 
-Change when the music changes.
+Do NOT blindly reset to:
 
-Stay when the music stays.
+FLOW + BLUE
+FLOW + ICE
+FLOW + CYBER
+FLOW + RAINBOW
 
 ==================================================
 OUTPUT
@@ -543,404 +1032,455 @@ OUTPUT
 
 Return ONLY valid JSON.
 
-No markdown.
-
-No explanation.
-
-Use EXACTLY this structure:
+Use exactly:
 
 {
-    "pattern": "ROCK",
-    "palette": "FIRE",
-    "speed": 1.7,
-    "intensity": 1,
+    "pattern": "FLOW",
+    "palette": "RAINBOW",
+    "speed": 1,
+    "intensity": 0.8,
     "strobe": false,
-    "bottomMode": "CHASE"
+    "bottomMode": "GRADIENT"
 }
 `;
 
-//==================================================
-// HELPERS
-//==================================================
+// ==========================================================
+// GEMINI REQUEST
+// ==========================================================
 
-function number(
-    value,
-    min,
-    max,
-    fallback
+async function askGemini(
+    audio,
+    meaningfulChange
 ) {
 
-    const n = Number(value);
+    const url =
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
-    if (!Number.isFinite(n)) {
-        return fallback;
+    const prompt = `
+
+CURRENT MUSIC:
+
+BPM:
+${audio.bpm}
+
+LOUDNESS:
+${audio.loudness}
+
+ENERGY:
+${audio.energy}
+
+BEAT:
+${audio.beat}
+
+BEAT STRENGTH:
+${audio.beatStrength}
+
+==================================================
+CURRENT SHOW
+==================================================
+
+CURRENT PATTERN:
+${lastPattern || "NONE"}
+
+CURRENT PALETTE:
+${lastPalette || "NONE"}
+
+RECENT PALETTES:
+${paletteHistory.join(", ") || "NONE"}
+
+PREVIOUS PLAN:
+${
+    lastPlan
+        ? JSON.stringify(lastPlan)
+        : "NONE"
+}
+
+==================================================
+MUSIC CHANGE
+==================================================
+
+Meaningful music change:
+${
+    meaningfulChange
+        ? "YES"
+        : "NO"
+}
+
+Previous BPM:
+${lastBpm ?? "NONE"}
+
+Previous energy:
+${lastEnergy ?? "NONE"}
+
+==================================================
+DECISION
+==================================================
+
+If meaningful music change is NO:
+
+KEEP the current pattern and palette.
+
+You may adjust speed or intensity slightly.
+
+Do NOT randomly change the palette.
+
+If meaningful music change is YES:
+
+The lighting may evolve.
+
+Choose a pattern and palette that fit
+the new musical state.
+
+==================================================
+0 BPM
+==================================================
+
+If BPM is 0:
+
+NEVER choose CYBER.
+NEVER choose FIRE.
+NEVER choose RED.
+NEVER choose ORANGE.
+NEVER choose SUNSET.
+
+RAINBOW IS ALLOWED.
+
+==================================================
+VARIETY
+==================================================
+
+Do not constantly use:
+
+BLUE
+ICE
+CYAN
+CYBER
+
+CYBER must be uncommon.
+
+RAINBOW must remain available.
+
+Do not repeat the same palette endlessly.
+
+Return ONLY JSON.
+`;
+
+    const response =
+        await fetch(
+            url,
+            {
+                method: "POST",
+
+                headers: {
+                    "Content-Type":
+                        "application/json"
+                },
+
+                body: JSON.stringify({
+
+                    systemInstruction: {
+                        parts: [
+                            {
+                                text:
+                                    SYSTEM_PROMPT
+                            }
+                        ]
+                    },
+
+                    contents: [
+                        {
+                            role: "user",
+
+                            parts: [
+                                {
+                                    text:
+                                        prompt
+                                }
+                            ]
+                        }
+                    ],
+
+                    generationConfig: {
+
+                        temperature:
+                            0.95,
+
+                        responseMimeType:
+                            "application/json"
+
+                    }
+
+                })
+            }
+        );
+
+    if (!response.ok) {
+
+        const error =
+            await response.text();
+
+        throw new Error(
+            `Gemini ${response.status}: ${error}`
+        );
+
     }
 
-    return Math.max(
-        min,
-        Math.min(max, n)
+    const data =
+        await response.json();
+
+    const text =
+        data
+            ?.candidates?.[0]
+            ?.content?.parts?.[0]
+            ?.text;
+
+    if (!text) {
+
+        throw new Error(
+            "Gemini returned no text."
+        );
+
+    }
+
+    return JSON.parse(
+        text
     );
 }
 
-function cleanString(
-    value,
-    fallback
-) {
-
-    if (typeof value !== "string") {
-        return fallback;
-    }
-
-    return value
-        .trim()
-        .toUpperCase();
-
-}
-
-//==================================================
-// FALLBACK PLAN
-//==================================================
-
-function fallbackPlan() {
-
-    return {
-
-        pattern: "FLOW",
-
-        palette: "BLUE",
-
-        speed: 0.8,
-
-        intensity: 0.75,
-
-        strobe: false,
-
-        bottomMode: "GRADIENT"
-
-    };
-
-}
-
-//==================================================
+// ==========================================================
 // VALIDATE PLAN
-//==================================================
+// ==========================================================
 
 function validatePlan(
     plan,
-    music
+    audio,
+    meaningfulChange
 ) {
 
     if (
-        !plan ||
-        typeof plan !== "object"
+        typeof plan !== "object" ||
+        !plan
     ) {
 
-        return fallbackPlan();
+        plan = {};
 
     }
 
-    //==================================================
+    const patterns = [
+        "ROCK",
+        "FLOW",
+        "CROSS",
+        "RIPPLE",
+        "FLASH"
+    ];
+
+    const bottomModes = [
+        "GRADIENT",
+        "CHASE",
+        "SYNC",
+        "OFF"
+    ];
+
+    // ======================================================
     // PATTERN
-    //==================================================
+    // ======================================================
 
     let pattern =
-        cleanString(
-            plan.pattern,
+        String(
+            plan.pattern ||
+            lastPattern ||
             "FLOW"
-        );
+        ).toUpperCase();
 
-    if (!PATTERNS.includes(pattern)) {
+    if (
+        !patterns.includes(
+            pattern
+        )
+    ) {
 
-        pattern = "FLOW";
-
-    }
-
-    //==================================================
-    // PALETTE
-    //==================================================
-
-    let palette =
-        cleanString(
-            plan.palette,
-            "BLUE"
-        );
-
-    if (!PALETTES.includes(palette)) {
-
-        palette = "BLUE";
+        pattern =
+            lastPattern ||
+            getFallbackPattern(
+                audio.bpm,
+                audio.energy
+            );
 
     }
 
-    //==================================================
+    // Preserve pattern if music didn't change.
+
+    if (
+        !meaningfulChange &&
+        lastPattern
+    ) {
+
+        pattern =
+            lastPattern;
+
+    }
+
+    // ======================================================
     // SPEED
-    //==================================================
+    // ======================================================
 
     let speed =
-        number(
-            plan.speed,
-            0.25,
-            3,
-            1
+        Number(
+            plan.speed
         );
 
-    //==================================================
+    if (
+        !Number.isFinite(speed)
+    ) {
+
+        speed = 1;
+
+    }
+
+    speed =
+        Math.max(
+            0.25,
+            Math.min(
+                3,
+                speed
+            )
+        );
+
+    // ======================================================
     // INTENSITY
-    //==================================================
+    // ======================================================
 
     let intensity =
-        number(
-            plan.intensity,
-            0,
-            1,
-            0.9
+        Number(
+            plan.intensity
         );
 
-    //==================================================
+    if (
+        !Number.isFinite(
+            intensity
+        )
+    ) {
+
+        intensity = 0.8;
+
+    }
+
+    intensity =
+        Math.max(
+            0,
+            Math.min(
+                1,
+                intensity
+            )
+        );
+
+    // ======================================================
     // STROBE
-    //==================================================
+    // ======================================================
 
     let strobe =
         plan.strobe === true;
 
-    //==================================================
-    // BOTTOM MODE
-    //==================================================
-
-    let bottomMode =
-        cleanString(
-            plan.bottomMode,
-            "GRADIENT"
-        );
-
     if (
-        !BOTTOM_MODES.includes(
-            bottomMode
-        )
-    ) {
-
-        bottomMode = "GRADIENT";
-
-    }
-
-    //==================================================
-    // SERVER-SIDE MUSICAL SAFETY RULES
-    //
-    // This prevents Gemini from getting lazy.
-    //==================================================
-
-    const bpm =
-        music.bpm;
-
-    const energy =
-        music.energy;
-
-    const bass =
-        music.bass;
-
-    //==================================================
-    // HIGH BPM
-    //==================================================
-
-    if (
-        bpm >= 150 &&
-        (
-            energy === "ENERGETIC" ||
-            energy === "EXTREME"
-        )
-    ) {
-
-        if (
-            pattern === "FLOW"
-        ) {
-
-            pattern = "ROCK";
-
-        }
-
-        if (
-            palette === "RAINBOW"
-        ) {
-
-            palette = "FIRE";
-
-        }
-
-        if (
-            bottomMode === "GRADIENT"
-        ) {
-
-            bottomMode = "CHASE";
-
-        }
-
-        speed =
-            Math.max(
-                speed,
-                1.5
-            );
-
-        intensity =
-            Math.max(
-                intensity,
-                0.9
-            );
-
-    }
-
-    //==================================================
-    // MEDIUM-HIGH BPM
-    //==================================================
-
-    else if (
-        bpm >= 120 &&
-        energy === "ENERGETIC"
-    ) {
-
-        if (
-            pattern === "FLOW"
-        ) {
-
-            pattern = "CROSS";
-
-        }
-
-        if (
-            palette === "RAINBOW"
-        ) {
-
-            palette = "CYBER";
-
-        }
-
-        if (
-            bottomMode === "GRADIENT"
-        ) {
-
-            bottomMode = "SYNC";
-
-        }
-
-        speed =
-            Math.max(
-                speed,
-                1.2
-            );
-
-    }
-
-    //==================================================
-    // STRONG BASS
-    //==================================================
-
-    if (
-        bass >= 0.85
-    ) {
-
-        if (
-            pattern === "FLOW"
-        ) {
-
-            pattern = "RIPPLE";
-
-        }
-
-        if (
-            palette === "RAINBOW"
-        ) {
-
-            palette = "PURPLE";
-
-        }
-
-    }
-
-    //==================================================
-    // EXTREME ENERGY
-    //==================================================
-
-    if (
-        energy === "EXTREME"
-    ) {
-
-        intensity =
-            Math.max(
-                intensity,
-                0.95
-            );
-
-        if (
-            pattern === "FLOW"
-        ) {
-
-            pattern = "ROCK";
-
-        }
-
-        if (
-            palette === "RAINBOW"
-        ) {
-
-            palette = "FIRE";
-
-        }
-
-    }
-
-    //==================================================
-    // CALM MUSIC
-    //==================================================
-
-    if (
-        energy === "CALM" &&
-        bpm > 0 &&
-        bpm < 90
-    ) {
-
-        if (
-            pattern === "ROCK" ||
-            pattern === "FLASH"
-        ) {
-
-            pattern = "FLOW";
-
-        }
-
-        if (
-            palette === "RAINBOW"
-        ) {
-
-            palette = "ICE";
-
-        }
-
-        if (
-            bottomMode === "CHASE"
-        ) {
-
-            bottomMode = "GRADIENT";
-
-        }
-
-        speed =
-            Math.min(
-                speed,
-                1
-            );
-
-    }
-
-    //==================================================
-    // STROBE SAFETY
-    //==================================================
-
-    if (
-        bpm < 140 ||
-        energy !== "EXTREME"
+        audio.bpm <= 10 ||
+        audio.energy === "CALM"
     ) {
 
         strobe = false;
 
     }
+
+    // ======================================================
+    // BOTTOM MODE
+    // ======================================================
+
+    let bottomMode =
+        String(
+            plan.bottomMode ||
+            "GRADIENT"
+        ).toUpperCase();
+
+    if (
+        !bottomModes.includes(
+            bottomMode
+        )
+    ) {
+
+        bottomMode =
+            "GRADIENT";
+
+    }
+
+    if (
+        !meaningfulChange &&
+        lastPlan?.bottomMode
+    ) {
+
+        bottomMode =
+            lastPlan.bottomMode;
+
+    }
+
+    // ======================================================
+    // PALETTE
+    // ======================================================
+
+    const palette =
+        fixPalette(
+            plan.palette,
+            audio.bpm,
+            audio.energy,
+            meaningfulChange
+        );
+
+    // ======================================================
+    // CALM
+    // ======================================================
+
+    if (
+        audio.energy === "CALM"
+    ) {
+
+        if (
+            pattern === "FLASH"
+        ) {
+
+            pattern =
+                "FLOW";
+
+        }
+
+        bottomMode =
+            "GRADIENT";
+
+    }
+
+    // ======================================================
+    // 0 BPM
+    // ======================================================
+
+    if (
+        audio.bpm <= 10
+    ) {
+
+        strobe = false;
+
+        if (
+            pattern === "FLASH"
+        ) {
+
+            pattern =
+                "FLOW";
+
+        }
+
+        bottomMode =
+            "GRADIENT";
+
+    }
+
+    // ======================================================
+    // RESULT
+    // ======================================================
 
     return {
 
@@ -948,21 +1488,26 @@ function validatePlan(
 
         palette,
 
-        speed,
+        speed:
+            Number(
+                speed.toFixed(2)
+            ),
 
-        intensity,
+        intensity:
+            Number(
+                intensity.toFixed(2)
+            ),
 
         strobe,
 
         bottomMode
 
     };
-
 }
 
-//==================================================
+// ==========================================================
 // PARTYBOX ENDPOINT
-//==================================================
+// ==========================================================
 
 app.post(
     "/partybox",
@@ -970,303 +1515,289 @@ app.post(
 
         try {
 
-            const music =
-                req.body || {};
+            // ==================================================
+            // AUTH
+            // ==================================================
 
-            //==================================================
-            // READ MUSIC DATA
-            //==================================================
+            const providedSecret =
+                req.headers[
+                    "x-partybox-key"
+                ];
 
-            const loudness =
-                number(
-                    music.loudness,
-                    0,
-                    3000,
-                    0
-                );
+            if (
+                PARTYBOX_SECRET &&
+                providedSecret !==
+                    PARTYBOX_SECRET
+            ) {
 
-            const bpm =
-                number(
-                    music.bpm,
-                    0,
-                    220,
-                    0
-                );
-
-            const beatStrength =
-                number(
-                    music.beatStrength,
-                    0,
-                    1,
-                    0
-                );
-
-            const bass =
-                number(
-                    music.bass,
-                    0,
-                    1,
-                    0
-                );
-
-            const mid =
-                number(
-                    music.mid,
-                    0,
-                    1,
-                    0
-                );
-
-            const treble =
-                number(
-                    music.treble,
-                    0,
-                    1,
-                    0
-                );
-
-            const beat =
-                music.beat === true;
-
-            const energy =
-                cleanString(
-                    music.energy,
-                    "NORMAL"
-                );
-
-            const currentPattern =
-                cleanString(
-                    music.currentPattern,
-                    "FLOW"
-                );
-
-            const currentPalette =
-                cleanString(
-                    music.currentPalette,
-                    "RAINBOW"
-                );
-
-            //==================================================
-            // LOG
-            //==================================================
-
-            console.log(
-                "🎵 PartyBox music:",
-                {
-                    bpm,
-                    loudness,
-                    beat,
-                    beatStrength,
-                    bass,
-                    mid,
-                    treble,
-                    energy,
-                    currentPattern,
-                    currentPalette
-                }
-            );
-
-            //==================================================
-            // AI PROMPT
-            //==================================================
-
-            const prompt = `
-CURRENT MUSIC INFORMATION
-
-Loudness:
-${loudness}
-
-BPM:
-${bpm}
-
-Beat detected:
-${beat}
-
-Beat strength:
-${beatStrength}
-
-Bass:
-${bass}
-
-Mid:
-${mid}
-
-Treble:
-${treble}
-
-Energy:
-${energy}
-
-
-CURRENT LIGHTING
-
-Pattern:
-${currentPattern}
-
-Palette:
-${currentPalette}
-
-
-Choose the next lighting configuration.
-
-IMPORTANT:
-
-Do not automatically choose RAINBOW.
-
-If the music is energetic, consider FIRE, CYBER,
-RED, PURPLE, BLUE, or SUNSET.
-
-If BPM is above 130, strongly consider ROCK or CROSS.
-
-If BPM is above 150, strongly consider ROCK,
-CROSS, or FLASH.
-
-If bass is very strong, consider RIPPLE.
-
-If the current configuration is already appropriate,
-you may keep it.
-
-Return ONLY JSON.
-`;
-
-            //==================================================
-            // GEMINI
-            //==================================================
-
-            const response =
-                await ai.models.generateContent({
-
-                    model: MODEL,
-
-                    contents: prompt,
-
-                    config: {
-
-                        systemInstruction:
-                            SYSTEM_PROMPT,
-
-                        temperature: 1.0,
-
-                        responseMimeType:
-                            "application/json"
-
-                    }
-
-                });
-
-            let text =
-                response.text;
-
-            if (!text) {
-
-                throw new Error(
-                    "Gemini returned an empty response."
-                );
+                return res
+                    .status(401)
+                    .json({
+                        error:
+                            "Unauthorized"
+                    });
 
             }
 
-            //==================================================
-            // CLEAN RESPONSE
-            //==================================================
+            // ==================================================
+            // AUDIO
+            // ==================================================
 
-            text =
-                text
-                    .replace(
-                        /^```json\s*/i,
-                        ""
-                    )
-                    .replace(
-                        /^```\s*/i,
-                        ""
-                    )
-                    .replace(
-                        /\s*```$/i,
-                        ""
-                    )
-                    .trim();
+            const audio =
+                req.body?.audio || {};
 
-            //==================================================
-            // PARSE JSON
-            //==================================================
+            const bpm =
+                Math.max(
+                    0,
+                    Math.min(
+                        300,
+                        Number(
+                            audio.bpm
+                        ) || 0
+                    )
+                );
 
-            let plan;
+            const loudness =
+                Math.max(
+                    0,
+                    Math.min(
+                        10000,
+                        Number(
+                            audio.loudness
+                        ) || 0
+                    )
+                );
+
+            const beatStrength =
+                Math.max(
+                    0,
+                    Math.min(
+                        1,
+                        Number(
+                            audio.beatStrength
+                        ) || 0
+                    )
+                );
+
+            const beat =
+                audio.beat === true;
+
+            let energy =
+                String(
+                    audio.energy ||
+                    "NORMAL"
+                ).toUpperCase();
+
+            if (
+                ![
+                    "CALM",
+                    "NORMAL",
+                    "ENERGETIC",
+                    "EXTREME"
+                ].includes(
+                    energy
+                )
+            ) {
+
+                energy =
+                    "NORMAL";
+
+            }
+
+            // ==================================================
+            // MUSIC CHANGE
+            // ==================================================
+
+            const meaningfulChange =
+                musicChangedMeaningfully(
+                    bpm,
+                    energy
+                );
+
+            // ==================================================
+            // CLEAN AUDIO
+            // ==================================================
+
+            const cleanAudio = {
+
+                bpm,
+
+                loudness,
+
+                beat,
+
+                beatStrength,
+
+                energy,
+
+                currentPattern:
+                    lastPattern ||
+                    "FLOW"
+
+            };
+
+            console.log(
+                "🎵 PartyBox music:",
+                cleanAudio
+            );
+
+            console.log(
+                "🎛️ Meaningful change:",
+                meaningfulChange
+            );
+
+            // ==================================================
+            // GEMINI
+            // ==================================================
+
+            let aiPlan;
 
             try {
 
-                plan =
-                    JSON.parse(text);
+                aiPlan =
+                    await askGemini(
+                        cleanAudio,
+                        meaningfulChange
+                    );
 
             } catch (error) {
 
                 console.error(
-                    "❌ Invalid Gemini JSON:"
+                    "❌ Gemini error:",
+                    error.message
                 );
 
-                console.error(
-                    text
-                );
+                // If Gemini fails and the music
+                // hasn't changed, preserve the show.
 
-                throw new Error(
-                    "Gemini returned invalid JSON."
-                );
+                if (
+                    !meaningfulChange &&
+                    lastPlan
+                ) {
+
+                    aiPlan = {
+                        ...lastPlan
+                    };
+
+                } else {
+
+                    aiPlan = {
+
+                        pattern:
+                            getFallbackPattern(
+                                bpm,
+                                energy
+                            ),
+
+                        palette:
+                            getFallbackPalette(
+                                bpm,
+                                energy
+                            ),
+
+                        speed:
+                            energy === "EXTREME"
+                                ? 2
+                                : energy === "ENERGETIC"
+                                    ? 1.5
+                                    : energy === "NORMAL"
+                                        ? 1
+                                        : 0.8,
+
+                        intensity:
+                            energy === "CALM"
+                                ? 0.65
+                                : energy === "EXTREME"
+                                    ? 1
+                                    : energy === "ENERGETIC"
+                                        ? 0.9
+                                        : 0.8,
+
+                        strobe:
+                            false,
+
+                        bottomMode:
+                            energy === "ENERGETIC" ||
+                            energy === "EXTREME"
+                                ? "CHASE"
+                                : "GRADIENT"
+
+                    };
+
+                }
 
             }
 
-            //==================================================
-            // VALIDATE + CORRECT
-            //==================================================
+            // ==================================================
+            // VALIDATE
+            // ==================================================
 
-            plan =
+            const plan =
                 validatePlan(
-                    plan,
-                    {
-                        bpm,
-                        bass,
-                        energy
-                    }
+                    aiPlan,
+                    cleanAudio,
+                    meaningfulChange
                 );
 
-            //==================================================
-            // LOG RESULT
-            //==================================================
+            // ==================================================
+            // REMEMBER
+            // ==================================================
+
+            rememberPalette(
+                plan.palette
+            );
+
+            lastPattern =
+                plan.pattern;
+
+            lastPlan =
+                plan;
+
+            lastBpm =
+                bpm;
+
+            lastEnergy =
+                energy;
+
+            // ==================================================
+            // LOG
+            // ==================================================
 
             console.log(
                 "💡 PartyBox AI:",
                 plan
             );
 
-            //==================================================
-            // SEND TO ROBLOX
-            //==================================================
+            // ==================================================
+            // RESPONSE
+            // ==================================================
 
-            res.json(
+            return res.json(
                 plan
             );
 
         } catch (error) {
 
             console.error(
-                "❌ PartyBox AI error:",
-                error.message ||
+                "❌ PartyBox server error:",
                 error
             );
 
-            //==================================================
-            // ALWAYS RETURN SOMETHING
-            //==================================================
-
-            res.json(
-                fallbackPlan()
-            );
+            return res
+                .status(500)
+                .json({
+                    error:
+                        "Internal server error"
+                });
 
         }
 
     }
 );
 
-//==================================================
+// ==========================================================
 // HEALTH CHECK
-//==================================================
+// ==========================================================
 
 app.get(
     "/",
@@ -1278,49 +1809,37 @@ app.get(
                 "PartyBox AI online",
 
             model:
-                MODEL,
+                GEMINI_MODEL,
 
-            patterns:
-                PATTERNS,
+            lastPalette,
 
-            palettes:
-                PALETTES,
+            lastPattern,
 
-            bottomModes:
-                BOTTOM_MODES
+            lastBpm,
+
+            lastEnergy,
+
+            paletteHistory
 
         });
 
     }
 );
 
-//==================================================
-// START
-//==================================================
+// ==========================================================
+// START SERVER
+// ==========================================================
 
 app.listen(
     PORT,
-    "0.0.0.0",
     () => {
 
         console.log(
-            "=========================================="
+            `🔊 PartyBox AI server running on port ${PORT}`
         );
 
         console.log(
-            "🔊 PARTYBOX AI SERVER ONLINE"
-        );
-
-        console.log(
-            `🌐 Port: ${PORT}`
-        );
-
-        console.log(
-            `🤖 Model: ${MODEL}`
-        );
-
-        console.log(
-            "=========================================="
+            `🤖 Gemini model: ${GEMINI_MODEL}`
         );
 
     }
