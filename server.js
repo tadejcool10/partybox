@@ -362,7 +362,8 @@ function getPatternPool(
         return [
             "CROSS",
             "ROCK",
-            "RIPPLE"
+            "RIPPLE",
+            "SPIN"
         ];
 
     }
@@ -374,7 +375,8 @@ function getPatternPool(
         return [
             "ROCK",
             "CROSS",
-            "RIPPLE"
+            "RIPPLE",
+            "SPIN"
         ];
 
     }
@@ -386,7 +388,8 @@ function getPatternPool(
         return [
             "ROCK",
             "CROSS",
-            "FLASH"
+            "FLASH",
+            "SPIN"
         ];
 
     }
@@ -394,7 +397,8 @@ function getPatternPool(
     return [
         "FLOW",
         "CROSS",
-        "RIPPLE"
+        "RIPPLE",
+        "SPIN"
     ];
 }
 
@@ -703,6 +707,11 @@ FLASH
 Large synchronized flashes.
 Use rarely.
 
+SPIN
+A moving section of PartyBox Speaker_Lights.
+The top and bottom speaker-light sections move in opposite directions.
+Use when a smooth circular speaker-light chase fits the music.
+
 ==================================================
 PALETTES
 ==================================================
@@ -884,12 +893,14 @@ ENERGETIC:
 ROCK
 CROSS
 RIPPLE
+SPIN
 
 EXTREME:
 
 ROCK
 FLASH
 CROSS
+SPIN
 
 ==================================================
 BPM
@@ -913,7 +924,7 @@ ROCK or CROSS
 
 Above 150:
 
-ROCK, CROSS, or FLASH
+ROCK, CROSS, FLASH, or SPIN
 
 ==================================================
 SPEED
@@ -1030,6 +1041,8 @@ FLOW + RAINBOW
 OUTPUT
 ==================================================
 
+SPIN is a valid pattern. Use it when a moving speaker-light chase fits the music.
+
 Return ONLY valid JSON.
 
 Use exactly:
@@ -1130,6 +1143,9 @@ The lighting may evolve.
 
 Choose a pattern and palette that fit
 the new musical state.
+
+SPIN is allowed when a moving speaker-light chase
+fits the music.
 
 ==================================================
 0 BPM
@@ -1271,7 +1287,8 @@ function validatePlan(
         "FLOW",
         "CROSS",
         "RIPPLE",
-        "FLASH"
+        "FLASH",
+        "SPIN"
     ];
 
     const bottomModes = [
