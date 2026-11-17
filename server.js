@@ -895,12 +895,16 @@ CROSS
 RIPPLE
 SPIN
 
+SPIN should be a frequent choice when the music has a steady, driving beat.
+
 EXTREME:
 
 ROCK
 FLASH
 CROSS
 SPIN
+
+SPIN should be one of the main choices, not a rare special effect.
 
 ==================================================
 BPM
@@ -916,15 +920,17 @@ FLOW or CROSS
 
 110-130:
 
-CROSS or ROCK
+CROSS, ROCK, or SPIN
 
 130-150:
 
-ROCK or CROSS
+ROCK, CROSS, or SPIN
 
 Above 150:
 
-ROCK, CROSS, FLASH, or SPIN
+SPIN, ROCK, CROSS, or FLASH
+
+Prefer SPIN regularly at 110 BPM and above when the beat is steady.
 
 ==================================================
 SPEED
@@ -1144,8 +1150,10 @@ The lighting may evolve.
 Choose a pattern and palette that fit
 the new musical state.
 
-SPIN is allowed when a moving speaker-light chase
-fits the music.
+SPIN is actively encouraged when the beat is steady and driving.
+Do not treat SPIN as a rare pattern.
+For energetic music, choose SPIN frequently; for extreme music, make it one of the top choices.
+At 110 BPM and above, SPIN is a normal option even when energy is NORMAL.
 
 ==================================================
 0 BPM
@@ -1333,6 +1341,30 @@ function validatePlan(
 
         pattern =
             lastPattern;
+
+    }
+
+    // ======================================================
+    // SPIN FREQUENCY
+    // ======================================================
+
+    // Give SPIN a meaningful, consistent chance on musical changes.
+    // Keep calm/slow music smooth, and avoid forcing SPIN on every change.
+    if (
+        meaningfulChange &&
+        audio.bpm >= 110 &&
+        audio.energy !== "CALM" &&
+        pattern !== "SPIN"
+    ) {
+
+        const spinChance =
+            audio.energy === "EXTREME" ? 0.65 :
+            audio.energy === "ENERGETIC" ? 0.55 :
+            0.40;
+
+        if (Math.random() < spinChance) {
+            pattern = "SPIN";
+        }
 
     }
 
